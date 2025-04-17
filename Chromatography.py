@@ -7,747 +7,6 @@ from matplotlib.figure import Figure
 import time
 from scipy.signal import savgol_filter
 
-class ChromatographyGame:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Chromatography Peak Detection Game")
-        self.root.geometry("1000x700")
-        self.root.config(bg="#f0f0f0")
-        
-        # Game state variables
-        self.score = 0
-        self.round = 0
-        self.max_rounds = 10
-        self.current_snr = 10  # Starting SNR
-        self.true_peaks = []
-        self.user_detected_peaks = []
-        self.game_over = False
-        self.time_start = 0
-        self.time_limit = 30  # seconds per round
-        
-        # Initialize UI
-        self.create_widgets()
-        self.start_new_round()
-        
-    def create_widgets(self):
-        # Game frame
-        game_frame = ttk.Frame(self.root, padding="10")
-        game_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Top info frame
-        info_frame = ttk.Frame(game_frame)
-        info_frame.pack(fill=tk.X, pady=10)
-        
-        # Score label
-        self.score_label = ttk.Label(info_frame, text="Score: 0", font=("Arial", 14))
-        self.score_label.pack(side=tk.LEFT, padx=10)
-        
-        # Round label
-        self.round_label = ttk.Label(info_frame, text="Round: 1/10", font=("Arial", 14))
-        self.round_label.pack(side=tk.LEFT, padx=10)
-        
-        # SNR label
-        self.snr_label = ttk.Label(info_frame, text=f"Signal-to-Noise Ratio: {self.current_snr}", font=("Arial", 14))
-        self.snr_label.pack(side=tk.LEFT, padx=10)
-        
-        # Timer label
-        self.timer_label = ttk.Label(info_frame, text="Time: 30s", font=("Arial", 14))
-        self.timer_label.pack(side=tk.RIGHT, padx=10)
-        
-        # Matplotlib figure
-        self.fig = Figure(figsize=(10, 5), dpi=100)
-        self.ax = self.fig.add_subplot(111)
-        self.canvas = FigureCanvasTkAgg(self.fig, game_frame)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, pady=10)
-        
-        # Add click event to the plot
-        self.canvas.mpl_connect('button_press_event', self.on_click)
-        
-        # Bottom frame for controls
-        controls_frame = ttk.Frame(game_frame)
-        controls_frame.pack(fill=tk.X, pady=10)
-        
-        # Instructions label
-        instructions = "Click on the chromatogram to mark where you think peaks are located. The closer you are to the actual peaks, the more points you'll earn!"
-        ttk.Label(controls_frame, text=instructions, wraplength=800).pack(pady=10)
-        
-        # Buttons
-        button_frame = ttk.Frame(controls_frame)
-        button_frame.pack(pady=10)
-        
-        ttk.Button(button_frame, text="Submit", command=self.submit_round).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Clear Selections", command=self.clear_selections).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Instructions", command=self.show_instructions).pack(side=tk.LEFT, padx=5)
-        
-    def generate_chromatogram(self, snr):
-        """Generate a synthetic chromatogram with given SNR"""
-        # Time points
-        self.x = np.linspace(0, 10, 1000)
-        
-        # Generate baseline signal (zero)
-        self.y_true = np.zeros_like(self.x)
-        
-        # Add 2-5 random peaks
-        num_peaks = np.random.randint(2, 6)
-        self.true_peaks = []
-        
-        for _ in range(num_peaks):
-            # Random peak position
-            peak_pos = np.random.uniform(1, 9)
-            # Random peak height (larger = more visible)
-            peak_height = np.random.uniform(0.5, 1.5)
-            # Random peak width
-            peak_width = np.random.uniform(0.1, 0.3)
-            
-            # Create Gaussian peak
-            peak = peak_height * np.exp(-((self.x - peak_pos) ** 2) / (2 * peak_width ** 2))
-            self.y_true += peak
-            
-            # Store peak information
-            self.true_peaks.append((peak_pos, peak_height, peak_width))
-        
-        # Scale signal based on SNR
-        signal_power = np.mean(self.y_true ** 2)
-        noise_power = signal_power / (10 ** (snr / 10))
-        noise_std = np.sqrt(noise_power)
-        
-        # Add noise to the signal
-        noise = np.random.normal(0, noise_std, size=self.x.shape)
-        self.y_noisy = self.y_true + noise
-        
-        return self.x, self.y_noisy
-    
-    def plot_chromatogram(self):
-        """Plot the current chromatogram with user selections"""
-        self.ax.clear()
-        self.ax.plot(self.x, self.y_noisy, 'b-', linewidth=1)
-        self.ax.set_xlabel('Retention Time (min)')
-        self.ax.set_ylabel('Detector Response')
-        self.ax.set_title('Chromatogram - Find the Peaks!')
-        
-        # Plot user selections
-        if self.user_detected_peaks:
-            user_x = [pos for pos, _ in self.user_detected_peaks]
-            user_y = [height for _, height in self.user_detected_peaks]
-            self.ax.plot(user_x, user_y, 'ro', markersize=8, label='Your selections')
-            
-        self.ax.legend()
-        self.fig.tight_layout()
-        self.canvas.draw()
-    
-    def on_click(self, event):
-        """Handle click events on the plot"""
-        if event.inaxes != self.ax or self.game_over:
-            return
-        
-        # Get x,y coordinates of the click
-        x_click = event.xdata
-        y_click = event.ydata
-        
-        # Add to detected peaks
-        self.user_detected_peaks.append((x_click, y_click))
-        
-        # Update plot
-        self.plot_chromatogram()
-    
-    def clear_selections(self):
-        """Clear all user peak selections"""
-        self.user_detected_peaks = []
-        self.plot_chromatogram()
-    
-    def start_new_round(self):
-        """Start a new game round"""
-        self.round += 1
-        self.round_label.config(text=f"Round: {self.round}/{self.max_rounds}")
-        
-        # Adjust SNR based on round (gets harder)
-        if self.round > 1:
-            self.current_snr = max(2, 10 - (self.round - 1))
-        self.snr_label.config(text=f"Signal-to-Noise Ratio: {self.current_snr}")
-        
-        # Generate new chromatogram
-        self.generate_chromatogram(self.current_snr)
-        
-        # Reset user selections
-        self.user_detected_peaks = []
-        
-        # Update plot
-        self.plot_chromatogram()
-        
-        # Reset timer
-        self.time_start = time.time()
-        self.update_timer()
-    
-    def update_timer(self):
-        """Update the timer display"""
-        if self.game_over:
-            return
-            
-        elapsed = time.time() - self.time_start
-        remaining = max(0, self.time_limit - elapsed)
-        
-        self.timer_label.config(text=f"Time: {int(remaining)}s")
-        
-        if remaining <= 0:
-            self.submit_round()
-        else:
-            self.root.after(1000, self.update_timer)
-    
-    def calculate_score(self):
-        """Calculate score based on accuracy of peak detection"""
-        score_for_round = 0
-        
-        # If no peaks detected, score is 0
-        if not self.user_detected_peaks:
-            return 0
-            
-        # For each true peak, find the closest user detection
-        for true_peak in self.true_peaks:
-            true_pos = true_peak[0]
-            
-            # Find closest user peak
-            closest_dist = float('inf')
-            for user_pos, _ in self.user_detected_peaks:
-                dist = abs(true_pos - user_pos)
-                closest_dist = min(closest_dist, dist)
-            
-            # Score based on distance (closer = higher score)
-            if closest_dist < 0.2:  # Very accurate
-                score_for_round += 100
-            elif closest_dist < 0.5:  # Good detection
-                score_for_round += 50
-            elif closest_dist < 1.0:  # Decent detection
-                score_for_round += 25
-        
-        # Penalty for false positives (user peaks that don't match true peaks)
-        false_positives = 0
-        for user_pos, _ in self.user_detected_peaks:
-            is_false_positive = True
-            for true_peak in self.true_peaks:
-                true_pos = true_peak[0]
-                if abs(user_pos - true_pos) < 1.0:  # If within reasonable distance
-                    is_false_positive = False
-                    break
-            
-            if is_false_positive:
-                false_positives += 1
-        
-        # Penalty for false positives
-        score_for_round -= false_positives * 25
-        
-        # Ensure score is not negative
-        return max(0, score_for_round)
-    
-    def submit_round(self):
-        """Submit current round and update score"""
-        # Calculate score for this round
-        round_score = self.calculate_score()
-        self.score += round_score
-        
-        # Update score display
-        self.score_label.config(text=f"Score: {self.score}")
-        
-        # Show round results
-        messagebox.showinfo("Round Results", 
-            f"Round {self.round} complete!\n"
-            f"You scored {round_score} points.\n"
-            f"Total score: {self.score}")
-        
-        # Show true peaks
-        self.show_true_peaks()
-        
-        # Check if game is over
-        if self.round >= self.max_rounds:
-            self.end_game()
-        else:
-            # Start next round
-            self.start_new_round()
-    
-    def show_true_peaks(self):
-        """Show the true peak locations"""
-        self.ax.clear()
-        
-        # Plot noisy chromatogram
-        self.ax.plot(self.x, self.y_noisy, 'b-', linewidth=1, label='Noisy signal')
-        
-        # Plot true chromatogram
-        self.ax.plot(self.x, self.y_true, 'g-', linewidth=1, alpha=0.7, label='True signal')
-        
-        # Plot true peak positions
-        true_x = [pos for pos, _, _ in self.true_peaks]
-        true_y = [self.y_true[np.abs(self.x - pos).argmin()] for pos, _, _ in self.true_peaks]
-        self.ax.plot(true_x, true_y, 'g^', markersize=10, label='True peaks')
-        
-        # Plot user selections
-        if self.user_detected_peaks:
-            user_x = [pos for pos, _ in self.user_detected_peaks]
-            user_y = [height for _, height in self.user_detected_peaks]
-            self.ax.plot(user_x, user_y, 'ro', markersize=8, label='Your selections')
-        
-        self.ax.set_xlabel('Retention Time (min)')
-        self.ax.set_ylabel('Detector Response')
-        self.ax.set_title('Round Results - True Peaks vs. Your Selections')
-        self.ax.legend()
-        
-        self.fig.tight_layout()
-        self.canvas.draw()
-    
-    def end_game(self):
-        """End the game and show final score"""
-        self.game_over = True
-        
-        # Display final score
-        messagebox.showinfo("Game Over", 
-            f"Game Over!\n"
-            f"Your final score is {self.score} points.\n\n"
-            f"SNR Impact Analysis:\n"
-            f"- High SNR (8-10): Peaks are easy to identify\n"
-            f"- Medium SNR (5-7): Some peaks may be obscured by noise\n"
-            f"- Low SNR (2-4): Peak detection becomes very challenging\n\n"
-            f"This demonstrates how signal-to-noise ratio affects our ability to detect analytical signals!")
-        
-        # Ask if player wants to play again
-        if messagebox.askyesno("Play Again?", "Would you like to play again?"):
-            self.reset_game()
-        else:
-            self.root.quit()
-    
-    def reset_game(self):
-        """Reset the game state for a new game"""
-        self.score = 0
-        self.round = 0
-        self.game_over = False
-        self.score_label.config(text="Score: 0")
-        
-        # Start first round
-        self.start_new_round()
-    
-    def show_instructions(self):
-        """Show game instructions"""
-        instructions = (
-            "Chromatography Peak Detection Game\n\n"
-            "This game simulates the challenge of detecting peaks in chromatography data with varying levels of noise.\n\n"
-            "How to play:\n"
-            "1. Look at the chromatogram displayed on the screen\n"
-            "2. Click on the positions where you think peaks are located\n"
-            "3. Submit your selections before the timer runs out\n"
-            "4. You'll earn points based on how accurately you identify the true peak positions\n\n"
-            "Educational Value:\n"
-            "- Experience how signal-to-noise ratio (SNR) affects peak detection\n"
-            "- As you progress through rounds, the SNR decreases, making detection more challenging\n"
-            "- This simulates real analytical chemistry challenges where instrument noise can mask important signals\n\n"
-            "Tips:\n"
-            "- Look for characteristic Gaussian peak shapes\n"
-            "- Consider the signal pattern and try to distinguish patterns from random noise\n"
-            "- In later rounds with low SNR, focus on finding the most prominent peaks first"
-        )
-        
-        messagebox.showinfo("Game Instructions", instructions)
-
-def advanced_mode():
-    """Implementation of an advanced mode with more educational features"""
-    advanced_window = tk.Toplevel()
-    advanced_window.title("Advanced Signal-to-Noise Analysis")
-    advanced_window.geometry("1000x800")
-    
-    # Create notebook with tabs
-    notebook = ttk.Notebook(advanced_window)
-    notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-    
-    # Tab 1: SNR Impact Visualization
-    tab1 = ttk.Frame(notebook)
-    notebook.add(tab1, text="SNR Impact Visualization")
-    
-    # Create matplotlib figure for SNR impact
-    fig1 = Figure(figsize=(9, 5), dpi=100)
-    ax1 = fig1.add_subplot(111)
-    canvas1 = FigureCanvasTkAgg(fig1, tab1)
-    canvas1.get_tk_widget().pack(fill=tk.BOTH, expand=True, pady=10)
-    
-    # Controls frame
-    controls_frame1 = ttk.Frame(tab1)
-    controls_frame1.pack(fill=tk.X, pady=5)
-    
-    # SNR control
-    ttk.Label(controls_frame1, text="SNR Value:").pack(side=tk.LEFT, padx=5)
-    snr_var = tk.DoubleVar(value=10.0)
-    snr_slider = ttk.Scale(controls_frame1, from_=0.5, to=20, variable=snr_var, orient=tk.HORIZONTAL, length=200)
-    snr_slider.pack(side=tk.LEFT, padx=5)
-    snr_label = ttk.Label(controls_frame1, text="10.0")
-    snr_label.pack(side=tk.LEFT, padx=5)
-    
-    # Number of peaks control
-    ttk.Label(controls_frame1, text="Number of Peaks:").pack(side=tk.LEFT, padx=15)
-    num_peaks_var = tk.IntVar(value=2)
-    num_peaks_spinbox = ttk.Spinbox(controls_frame1, from_=1, to=10, textvariable=num_peaks_var, width=5)
-    num_peaks_spinbox.pack(side=tk.LEFT, padx=5)
-    
-    # Visualization options
-    show_height_var = tk.BooleanVar(value=False)
-    show_height_check = ttk.Checkbutton(controls_frame1, text="Show Peak Heights", variable=show_height_var)
-    show_height_check.pack(side=tk.LEFT, padx=15)
-    
-    show_noise_var = tk.BooleanVar(value=False)
-    show_noise_check = ttk.Checkbutton(controls_frame1, text="Show Noise Region", variable=show_noise_var)
-    show_noise_check.pack(side=tk.LEFT, padx=15)
-    
-    # Function to update SNR visualization
-    def update_snr_viz():
-        # Generate time points
-        x = np.linspace(0, 10, 1000)
-        
-        # Generate true signal with requested number of peaks
-        y_true = np.zeros_like(x)
-        
-        # Get number of peaks
-        num_peaks = num_peaks_var.get()
-        
-        # Use current time as seed for true randomness when updating
-        np.random.seed(int(time.time()))
-        
-        # Generate peak parameters based on number requested
-        peaks = []
-        for i in range(num_peaks):
-            # Space peaks somewhat evenly but with randomness
-            position = 1.0 + (8.0 * i / num_peaks) + np.random.uniform(-0.3, 0.3)
-            height = np.random.uniform(0.4, 1.0)
-            width = np.random.uniform(0.1, 0.3)
-            peaks.append((position, height, width))
-        
-        # Create peaks
-        for pos, height, width in peaks:
-            peak = height * np.exp(-((x - pos) ** 2) / (2 * width ** 2))
-            y_true += peak
-        
-        # Get current SNR from slider
-        snr = snr_var.get()
-        snr_label.config(text=f"{snr:.1f}")
-        
-        # Calculate noise based on SNR
-        signal_power = np.mean(y_true ** 2)
-        noise_power = signal_power / (10 ** (snr / 10))
-        noise_std = np.sqrt(noise_power)
-        
-        # Generate noise
-        np.random.seed(42)  # Use same seed for consistent comparison within the same view
-        noise = np.random.normal(0, noise_std, size=x.shape)
-        
-        # Add noise to signal
-        y_noisy = y_true + noise
-        
-        # Update plot
-        ax1.clear()
-        ax1.plot(x, y_true, 'g-', linewidth=2, alpha=0.7, label='True signal')
-        ax1.plot(x, y_noisy, 'b-', linewidth=1, label='Noisy signal')
-        
-        # Find suitable regions for noise measurement
-        # First, determine each peak's boundaries (±3σ from center)
-        peak_regions = []
-        for pos, _, width in peaks:
-            # Use 3 sigma (~99.7% of peak area)
-            start_idx = np.abs(x - (pos - 3 * width)).argmin()
-            end_idx = np.abs(x - (pos + 3 * width)).argmin()
-            peak_regions.append((start_idx, end_idx))
-        
-        # Find noise regions: sections between peaks
-        noise_regions = []
-        all_indices = sorted([(idx, 'start') for pos, _, width in peaks 
-                             for idx in [np.abs(x - (pos - 3 * width)).argmin()]] + 
-                            [(idx, 'end') for pos, _, width in peaks 
-                             for idx in [np.abs(x - (pos + 3 * width)).argmin()]])
-        
-        # Find gaps between peaks
-        last_idx = 50  # Start a bit into the chromatogram
-        for idx, type_ in all_indices:
-            if type_ == 'start' and idx - last_idx > 50:  # Minimum 50 points for noise region
-                noise_regions.append((last_idx, idx - 10))  # Leave small buffer before peak
-            if type_ == 'end':
-                last_idx = idx + 10  # Leave small buffer after peak
-        
-        # Add final region if there's space
-        if len(x) - last_idx > 50 and last_idx < len(x) - 50:
-            noise_regions.append((last_idx, len(x) - 50))
-        
-        # If no suitable regions found, use beginning and end of chromatogram
-        if not noise_regions:
-            if peak_regions[0][0] > 100:  # If there's space at beginning
-                noise_regions.append((50, peak_regions[0][0] - 20))
-            if peak_regions[-1][1] < len(x) - 100:  # If there's space at end
-                noise_regions.append((peak_regions[-1][1] + 20, len(x) - 50))
-        
-        # If still no noise regions, create two default regions
-        if not noise_regions:
-            noise_regions = [(50, 100), (900, 950)]
-        
-        # Select the first noise region for measurement
-        noise_start_idx, noise_end_idx = noise_regions[0]
-        noise_region = y_noisy[noise_start_idx:noise_end_idx]
-        estimated_noise = np.std(noise_region)
-        
-        # Mark peak positions and show height measurements if requested
-        for pos, height, width in peaks:
-            peak_idx = np.abs(x - pos).argmin()
-            measured_height = y_noisy[peak_idx]
-            
-            # Calculate SNR for this peak
-            peak_snr = measured_height / estimated_noise
-            
-            # Plot peak marker
-            ax1.plot(pos, measured_height, 'ro', markersize=6)
-            
-            # If show height is enabled, draw lines showing height measurement
-            if show_height_var.get():
-                # Draw vertical line from x-axis to peak
-                ax1.plot([pos, pos], [0, measured_height], 'r--', linewidth=1)
-                
-                # Draw peak boundaries (±3σ from center)
-                lower_bound = pos - 3 * width
-                upper_bound = pos + 3 * width
-                ax1.axvspan(lower_bound, upper_bound, alpha=0.1, color='pink')
-                
-                # Add bracket markers for peak width
-                y_bracket = measured_height * 0.8
-                ax1.plot([lower_bound, upper_bound], [y_bracket, y_bracket], 'r-', linewidth=1)
-                ax1.plot([lower_bound, lower_bound], [y_bracket-0.02, y_bracket+0.02], 'r-', linewidth=1)
-                ax1.plot([upper_bound, upper_bound], [y_bracket-0.02, y_bracket+0.02], 'r-', linewidth=1)
-                
-                # Add text with height and SNR values
-                ax1.text(pos + 0.1, measured_height/2, 
-                         f"Height: {measured_height:.2f}\nSNR: {peak_snr:.1f}", 
-                         fontsize=8, verticalalignment='center')
-        
-        # If show noise is enabled, highlight all noise regions
-        if show_noise_var.get():
-            for noise_start_idx, noise_end_idx in noise_regions:
-                # Highlight noise region
-                noise_x_start = x[noise_start_idx]
-                noise_x_end = x[noise_end_idx]
-                ax1.axvspan(noise_x_start, noise_x_end, alpha=0.2, color='yellow', label='Noise region' if noise_regions.index((noise_start_idx, noise_end_idx)) == 0 else "")
-            
-            # Use first noise region for measurements
-            noise_start_idx, noise_end_idx = noise_regions[0]
-            noise_x_start = x[noise_start_idx]
-            noise_x_end = x[noise_end_idx]
-            
-            # Add horizontal lines showing the +/- standard deviation of noise
-            mean_noise = np.mean(y_noisy[noise_start_idx:noise_end_idx])
-            ax1.axhline(y=mean_noise + estimated_noise, color='orange', linestyle='--', alpha=0.7)
-            ax1.axhline(y=mean_noise - estimated_noise, color='orange', linestyle='--', alpha=0.7)
-            
-            # Add annotation for noise measurement
-            ax1.text(noise_x_end + 0.1, mean_noise, 
-                     f"Noise SD: {estimated_noise:.3f}", 
-                     fontsize=8, verticalalignment='center')
-        
-        # Add summary information
-        ax1.text(0.02, 0.95, f"Theoretical SNR: {snr:.1f}", transform=ax1.transAxes, fontsize=9)
-        
-        ax1.set_xlabel('Retention Time (min)')
-        ax1.set_ylabel('Detector Response')
-        ax1.set_title('Impact of Signal-to-Noise Ratio on Peak Detection')
-        ax1.legend(loc='upper right')
-        fig1.tight_layout()
-        canvas1.draw()
-    
-    # Update button
-    ttk.Button(controls_frame1, text="Update Visualization", command=update_snr_viz).pack(side=tk.LEFT, padx=20)
-    
-    # Initial update
-    update_snr_viz()
-    
-    # Tab 2: Detection Methods
-    tab2 = ttk.Frame(notebook)
-    notebook.add(tab2, text="Detection Methods Comparison")
-    
-    # Create matplotlib figure for detection methods
-    fig2 = Figure(figsize=(9, 5), dpi=100)
-    ax2 = fig2.add_subplot(111)
-    canvas2 = FigureCanvasTkAgg(fig2, tab2)
-    canvas2.get_tk_widget().pack(fill=tk.BOTH, expand=True, pady=10)
-    
-    # Controls frame for tab2
-    controls_frame2 = ttk.Frame(tab2)
-    controls_frame2.pack(fill=tk.X, pady=5)
-    
-    ttk.Label(controls_frame2, text="SNR for Comparison:").pack(side=tk.LEFT, padx=5)
-    method_snr_var = tk.DoubleVar(value=5.0)
-    method_snr_slider = ttk.Scale(controls_frame2, from_=1.0, to=15.0, variable=method_snr_var, orient=tk.HORIZONTAL, length=300)
-    method_snr_slider.pack(side=tk.LEFT, padx=5)
-    
-    method_snr_label = ttk.Label(controls_frame2, text="5.0")
-    method_snr_label.pack(side=tk.LEFT, padx=5)
-    
-    # Function to update detection methods visualization
-    def update_methods_viz():
-        # Generate time points
-        x = np.linspace(0, 10, 1000)
-        
-        # Generate true signal with multiple peaks
-        y_true = np.zeros_like(x)
-        
-        # Add several peaks with varying heights and widths
-        peaks = [
-            (2.0, 1.0, 0.2),   # (position, height, width)
-            (3.5, 0.5, 0.15),
-            (5.0, 0.3, 0.1),
-            (7.0, 0.8, 0.25),
-            (8.5, 0.4, 0.12)
-        ]
-        
-        for pos, height, width in peaks:
-            peak = height * np.exp(-((x - pos) ** 2) / (2 * width ** 2))
-            y_true += peak
-        
-        # Get current SNR from slider
-        snr = method_snr_var.get()
-        method_snr_label.config(text=f"{snr:.1f}")
-        
-        # Calculate noise based on SNR
-        signal_power = np.mean(y_true ** 2)
-        noise_power = signal_power / (10 ** (snr / 10))
-        noise_std = np.sqrt(noise_power)
-        
-        # Generate noise
-        np.random.seed(123)  # Fixed seed for consistency
-        noise = np.random.normal(0, noise_std, size=x.shape)
-        
-        # Add noise to signal
-        y_noisy = y_true + noise
-        
-        # Update plot
-        ax2.clear()
-        ax2.plot(x, y_noisy, 'b-', linewidth=1, label='Noisy signal')
-        
-        # Method 1: Moving average (simple smoothing)
-        window_size = 25
-        y_smooth = np.convolve(y_noisy, np.ones(window_size)/window_size, mode='same')
-        ax2.plot(x, y_smooth, 'r-', linewidth=1, label='Moving average')
-        
-        # Method 2: Savitzky-Golay filter (better smoothing)
-        y_savgol = savgol_filter(y_noisy, window_length=51, polyorder=3)
-        ax2.plot(x, y_savgol, 'g-', linewidth=1, label='Savitzky-Golay')
-        
-        # Method 3: First derivative for peak detection
-        from scipy.signal import savgol_filter
-        y_deriv = savgol_filter(y_noisy, window_length=51, polyorder=3, deriv=1)
-        # Scale derivative for visualization
-        deriv_scaling = 0.2
-        ax2.plot(x, deriv_scaling * y_deriv, 'm-', linewidth=1, label='First derivative')
-        
-        # Add true peak positions for reference
-        peak_positions = [pos for pos, _, _ in peaks]
-        peak_heights = [height for _, height, _ in peaks]
-        ax2.plot(peak_positions, peak_heights, 'ko', markersize=6, label='True peaks')
-        
-        ax2.set_xlabel('Retention Time (min)')
-        ax2.set_ylabel('Detector Response')
-        ax2.set_title(f'Comparison of Detection Methods at SNR = {snr:.1f}')
-        ax2.legend()
-        fig2.tight_layout()
-        canvas2.draw()
-    
-    # Update button for tab2
-    ttk.Button(controls_frame2, text="Update Methods", command=update_methods_viz).pack(side=tk.LEFT, padx=20)
-    
-    # Initial update for tab2
-    update_methods_viz()
-    
-    # Tab 3: Educational Information
-    tab3 = ttk.Frame(notebook)
-    notebook.add(tab3, text="Educational Resources")
-    
-    # Create a text widget with educational content
-    text_widget = tk.Text(tab3, wrap=tk.WORD, font=("Arial", 11))
-    text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-    
-    # Add scrollbar
-    scrollbar = ttk.Scrollbar(tab3, command=text_widget.yview)
-    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-    text_widget.config(yscrollcommand=scrollbar.set)
-    
-    # Educational content
-    edu_content = """# Signal-to-Noise Ratio in Chromatography
-
-## What is Signal-to-Noise Ratio (SNR)?
-
-Signal-to-Noise Ratio (SNR) is a measure that compares the level of a desired signal to the level of background noise. In chromatography, SNR is critical for determining the limit of detection (LOD) and limit of quantitation (LOQ) of an analytical method.
-
-SNR is typically calculated as:
-   SNR = Signal Height / Noise Height
-
-Where:
-- Signal Height is the height of the peak from the baseline
-- Noise Height is typically measured as the standard deviation of the baseline in a region without peaks
-
-## Importance in Analytical Chemistry
-
-1. **Detection Limits**: According to standard practice:
-   - LOD is defined at SNR = 3
-   - LOQ is defined at SNR = 10
-
-2. **Data Quality**: Higher SNR values indicate more reliable data with better precision and accuracy.
-
-3. **Method Validation**: SNR is a key parameter in method validation procedures.
-
-## Factors Affecting SNR in Chromatography
-
-1. **Instrument Factors**:
-   - Detector sensitivity and type
-   - Electronic noise in the detector
-   - Temperature fluctuations
-   - Pump pulsations
-
-2. **Method Factors**:
-   - Mobile phase composition
-   - Flow rate
-   - Column efficiency
-   - Sample preparation techniques
-
-3. **Sample Factors**:
-   - Analyte concentration
-   - Sample matrix complexity
-   - Interfering compounds
-
-## Improving SNR in Chromatographic Analysis
-
-1. **Signal Enhancement**:
-   - Increase sample concentration
-   - Use more sensitive detectors
-   - Optimize chromatographic conditions
-   - Use derivatization to enhance detector response
-
-2. **Noise Reduction**:
-   - Electronic filtering
-   - Temperature control
-   - Proper grounding of instruments
-   - Regular maintenance of equipment
-   - Use of high-purity solvents and reagents
-
-3. **Data Processing**:
-   - Signal averaging
-   - Smoothing algorithms (e.g., Savitzky-Golay)
-   - Baseline correction
-   - Digital filters
-
-## Practical Implications
-
-In real-world chromatographic analysis, the SNR directly impacts:
-
-- **Reliability**: Can you trust that a small peak is a real analyte or just noise?
-- **Quantification**: Low SNR leads to poor precision in quantitative analysis
-- **Trace Analysis**: Detection of compounds at very low concentrations requires excellent SNR
-- **Automated Processing**: Software peak detection algorithms struggle with low SNR data
-
-This simulation demonstrates these challenges by allowing you to experience how different SNR values affect your ability to detect peaks, mirroring the real-world challenges faced in analytical laboratories.
-"""
-    
-    text_widget.insert(tk.END, edu_content)
-    text_widget.config(state=tk.DISABLED)  # Make it read-only
-
-    # Keep this window in focus
-    advanced_window.focus_set()
-    advanced_window.grab_set()
-
 def signal_to_noise_simulator():
     """Implementation of a signal-to-noise simulator for educational purposes"""
     sim_window = tk.Tk()
@@ -768,37 +27,12 @@ def signal_to_noise_simulator():
     canvas1 = FigureCanvasTkAgg(fig1, tab1)
     canvas1.get_tk_widget().pack(fill=tk.BOTH, expand=True, pady=10)
     
-    # Controls frame
+    # Create the controls frames first
     controls_frame1 = ttk.Frame(tab1)
     controls_frame1.pack(fill=tk.X, pady=5)
     
-    # SNR control
-    ttk.Label(controls_frame1, text="SNR Value:").pack(side=tk.LEFT, padx=5)
-    snr_var = tk.DoubleVar(value=10.0)
-    snr_slider = ttk.Scale(controls_frame1, from_=0.5, to=20, variable=snr_var, orient=tk.HORIZONTAL, length=200)
-    snr_slider.pack(side=tk.LEFT, padx=5)
-    snr_label = ttk.Label(controls_frame1, text="10.0")
-    snr_label.pack(side=tk.LEFT, padx=5)
-    
-    # Number of peaks control
-    ttk.Label(controls_frame1, text="Number of Peaks:").pack(side=tk.LEFT, padx=15)
-    num_peaks_var = tk.IntVar(value=2)
-    num_peaks_spinbox = ttk.Spinbox(controls_frame1, from_=1, to=10, textvariable=num_peaks_var, width=5)
-    num_peaks_spinbox.pack(side=tk.LEFT, padx=5)
-    
-    # Visualization options
-    show_height_var = tk.BooleanVar(value=False)
-    show_height_check = ttk.Checkbutton(controls_frame1, text="Show Peak Heights", variable=show_height_var)
-    show_height_check.pack(side=tk.LEFT, padx=15)
-    
-    show_noise_var = tk.BooleanVar(value=False)
-    show_noise_check = ttk.Checkbutton(controls_frame1, text="Show Noise Region", variable=show_noise_var)
-    show_noise_check.pack(side=tk.LEFT, padx=15)
-
-    # Status message label
-    status_var = tk.StringVar(value="")
-    status_label = ttk.Label(tab1, textvariable=status_var, foreground="red")
-    status_label.pack(pady=5)
+    controls_frame1_row2 = ttk.Frame(tab1)
+    controls_frame1_row2.pack(fill=tk.X, pady=5)
     
     # Global variables to share data between tabs
     shared_data = {
@@ -811,80 +45,154 @@ def signal_to_noise_simulator():
         'noise_regions': []
     }
     
+    # Status message label
+    status_var = tk.StringVar(value="")
+    status_label = ttk.Label(tab1, textvariable=status_var, foreground="red")
+    status_label.pack(pady=5)
+    
+    # Create all variables needed by functions first
+    snr_var = tk.StringVar(value="10.0")
+    num_peaks_var = tk.IntVar(value=2)
+    points_across_var = tk.StringVar(value="12")
+    display_mode_var = tk.StringVar(value="Normal")
+    show_height_var = tk.BooleanVar(value=False)
+    show_noise_var = tk.BooleanVar(value=False)
+    show_peak_boundaries_var = tk.BooleanVar(value=False)
+    
+    # Define functions before they are referenced
     # Function to update SNR visualization
     def update_snr_viz():
-        # Generate time points
-        x = np.linspace(0, 10, 1000)
-        shared_data['x'] = x
+        # Get the desired number of points across peak
+        try:
+            points_across_peak = int(points_across_var.get())
+            if points_across_peak < 3:
+                points_across_peak = 3
+        except ValueError:
+            points_across_peak = 12  # Default if invalid
         
-        # Generate true signal with requested number of peaks
-        y_true = np.zeros_like(x)
+        # Store previous settings to check what changed
+        previous_peaks = len(shared_data.get('peaks', [])) if shared_data.get('peaks') else 0
+        previous_snr = shared_data.get('snr', None)
+        
+        # First generate a high-resolution x-axis for creating the theoretical peaks
+        # This ensures we have an accurate representation of the true signal
+        high_res_x = np.linspace(0, 10, 10000)  # Very high resolution
         
         # Get number of peaks
         num_peaks = num_peaks_var.get()
         
-        # Use current time as seed for true randomness when updating
-        np.random.seed(int(time.time()))
+        # Generate peak parameters based on number of peaks - only if number changed or first run
+        if previous_peaks != num_peaks or shared_data.get('peaks') is None:
+            # Use current time as seed for randomness when peak positions need to change
+            np.random.seed(int(time.time()))
+            
+            # Generate random positions with minimum spacing
+            peaks = []
+            min_spacing = 0.5  # Minimum spacing between peaks
+            positions = []
+            max_attempts = 100  # Prevent infinite loops
+            
+            for i in range(num_peaks):
+                attempts = 0
+                while attempts < max_attempts:
+                    pos = np.random.uniform(0.8, 9.2)  # Buffer from edges
+                    if all(abs(pos - p) >= min_spacing for p in positions):
+                        positions.append(pos)
+                        break
+                    attempts += 1
+                    
+                if attempts == max_attempts:
+                    pos = 1.0 + (8.0 * i / num_peaks)
+                    positions.append(pos)
+            
+            # Sort positions for natural chromatogram appearance
+            positions.sort()
+            
+            # Create peaks with random heights and widths
+            for pos in positions:
+                height = np.random.uniform(0.4, 1.0)
+                width = np.random.uniform(0.1, 0.3)
+                peaks.append((pos, height, width))
+        else:
+            # Keep existing peak positions and shapes
+            peaks = shared_data.get('peaks', [])
         
-        # Generate peak parameters based on number requested
-        peaks = []
-        for i in range(num_peaks):
-            # Space peaks somewhat evenly but with randomness
-            position = 1.0 + (8.0 * i / num_peaks) + np.random.uniform(-0.3, 0.3)
-            height = np.random.uniform(0.4, 1.0)
-            width = np.random.uniform(0.1, 0.3)
-            peaks.append((position, height, width))
-        
+        # Create high-resolution ideal signal
+        high_res_y_true = np.zeros_like(high_res_x)
+        for pos, height, width in peaks:
+            peak = height * np.exp(-((high_res_x - pos) ** 2) / (2 * width ** 2))
+            high_res_y_true += peak
+            
         # Store peaks for other tabs
         shared_data['peaks'] = peaks
         
-        # Create peaks
-        for pos, height, width in peaks:
-            peak = height * np.exp(-((x - pos) ** 2) / (2 * width ** 2))
-            y_true += peak
+        # Calculate average peak width for sampling rate determination
+        avg_width = np.mean([width for _, _, width in peaks]) if peaks else 0.2
         
-        # Store true signal
-        shared_data['y_true'] = y_true
+        # Calculate sampling interval based on points across peak
+        # Use 6*sigma as full peak width (base to base)
+        full_peak_width = 6 * avg_width
+        sampling_interval = full_peak_width / points_across_peak
         
-        # Get current SNR from slider
-        snr = snr_var.get()
+        # Calculate total number of points for the sampled signal
+        total_range = 10  # x-axis range
+        total_points = int(total_range / sampling_interval)
+        
+        # Create properly sampled x-axis
+        x_sampled = np.linspace(0, 10, total_points)
+        
+        # Interpolate the true signal from high resolution to our target resolution
+        from scipy.interpolate import interp1d
+        interp_func = interp1d(high_res_x, high_res_y_true, kind='linear')
+        y_true_sampled = interp_func(x_sampled)
+        
+        # Get current SNR from entry
+        try:
+            snr = float(snr_var.get())
+            if snr <= 0:
+                snr = 0.1
+        except ValueError:
+            snr = 10.0
         shared_data['snr'] = snr
-        snr_label.config(text=f"{snr:.1f}")
         
         # Calculate noise based on SNR
-        signal_power = np.mean(y_true ** 2)
+        signal_power = np.mean(y_true_sampled ** 2)
         noise_power = signal_power / (10 ** (snr / 10))
         noise_std = np.sqrt(noise_power)
         shared_data['noise_std'] = noise_std
         
-        # Generate noise
-        np.random.seed(42)  # Use same seed for consistent comparison within the same view
-        noise = np.random.normal(0, noise_std, size=x.shape)
+        # Generate noise for the sampled points
+        np.random.seed(42)  # Same seed for consistent comparison
+        noise = np.random.normal(0, noise_std, size=x_sampled.shape)
         
-        # Add noise to signal
-        y_noisy = y_true + noise
-        shared_data['y_noisy'] = y_noisy
+        # Add noise to sampled signal
+        y_noisy_sampled = y_true_sampled + noise
         
-        # Update plot
-        ax1.clear()
-        ax1.plot(x, y_true, 'g-', linewidth=2, alpha=0.7, label='True signal')
-        ax1.plot(x, y_noisy, 'b-', linewidth=1, label='Noisy signal')
+        # Store data for other tabs
+        shared_data['x'] = x_sampled
+        shared_data['y_true'] = y_true_sampled
+        shared_data['y_noisy'] = y_noisy_sampled
+        shared_data['high_res_x'] = high_res_x
+        shared_data['high_res_y_true'] = high_res_y_true
         
         # Find suitable regions for noise measurement
+        # Adjust minimum region size based on sampling rate
+        min_points_for_noise = max(points_across_peak, 5)
+        
         # First, determine each peak's boundaries (±3σ from center)
         peak_regions = []
         for pos, _, width in peaks:
             # Use 3 sigma (~99.7% of peak area)
-            start_idx = np.abs(x - (pos - 3 * width)).argmin()
-            end_idx = np.abs(x - (pos + 3 * width)).argmin()
+            start_idx = np.abs(x_sampled - (pos - 3 * width)).argmin()
+            end_idx = np.abs(x_sampled - (pos + 3 * width)).argmin()
             peak_regions.append((start_idx, end_idx))
         
         # Flatten peak regions into a mask of used indices
-        used_indices = np.zeros(len(x), dtype=bool)
+        used_indices = np.zeros(len(x_sampled), dtype=bool)
         for start_idx, end_idx in peak_regions:
             used_indices[start_idx:end_idx] = True
         
-        # Find potential noise regions (at least 50 consecutive unused points)
+        # Find potential noise regions
         noise_regions = []
         in_region = False
         start_idx = 0
@@ -897,7 +205,7 @@ def signal_to_noise_simulator():
             elif (used_indices[i] or i == len(used_indices)-1) and in_region:
                 # End of a region
                 end_idx = i
-                if end_idx - start_idx >= 50:  # Minimum 50 points for noise calculation
+                if end_idx - start_idx >= min_points_for_noise:
                     noise_regions.append((start_idx, end_idx))
                 in_region = False
         
@@ -914,13 +222,38 @@ def signal_to_noise_simulator():
         else:
             # Select the first noise region for measurement
             noise_start_idx, noise_end_idx = noise_regions[0]
-            noise_region = y_noisy[noise_start_idx:noise_end_idx]
+            noise_region = y_noisy_sampled[noise_start_idx:noise_end_idx]
             estimated_noise = np.std(noise_region)
+        
+        # Update plot
+        ax1.clear()
+        
+        # Remove top and right spines
+        ax1.spines['top'].set_visible(False)
+        ax1.spines['right'].set_visible(False)
+        
+        # Plot the high-resolution ideal signal
+        ax1.plot(high_res_x, high_res_y_true, 'g-', linewidth=2, alpha=0.7, label='Ideal signal')
+        
+        # Check display mode
+        if display_mode_var.get() == "High-Res with Noise":
+            # Generate high-resolution noise with the same characteristics
+            high_res_noise = np.random.normal(0, noise_std, size=high_res_x.shape)
+            high_res_y_noisy = high_res_y_true + high_res_noise
+            
+            # Plot high-resolution signal with noise in blue
+            ax1.plot(high_res_x, high_res_y_noisy, 'b-', linewidth=1, label='High-res with noise')
+            
+            # Plot the sampled points as red dots with connecting lines
+            ax1.plot(x_sampled, y_noisy_sampled, 'r-', linewidth=1, label='Sampled signal')
+        else:
+            # Original mode - just plot the sampled signal in blue (no markers)
+            ax1.plot(x_sampled, y_noisy_sampled, 'b-', linewidth=1, label='Signal with noise')
         
         # Mark peak positions and show height measurements if requested
         for pos, height, width in peaks:
-            peak_idx = np.abs(x - pos).argmin()
-            measured_height = y_noisy[peak_idx]
+            peak_idx = np.abs(x_sampled - pos).argmin()
+            measured_height = y_noisy_sampled[peak_idx]
             
             # Calculate SNR for this peak
             peak_snr = measured_height / estimated_noise
@@ -933,16 +266,12 @@ def signal_to_noise_simulator():
                 # Draw vertical line from x-axis to peak
                 ax1.plot([pos, pos], [0, measured_height], 'r--', linewidth=1)
                 
-                # Draw peak boundaries (±3σ from center)
+                # Draw peak boundaries with vertical dashed black lines
                 lower_bound = pos - 3 * width
                 upper_bound = pos + 3 * width
-                ax1.axvspan(lower_bound, upper_bound, alpha=0.1, color='pink')
                 
-                # Add bracket markers for peak width
-                y_bracket = measured_height * 0.8
-                ax1.plot([lower_bound, upper_bound], [y_bracket, y_bracket], 'r-', linewidth=1)
-                ax1.plot([lower_bound, lower_bound], [y_bracket-0.02, y_bracket+0.02], 'r-', linewidth=1)
-                ax1.plot([upper_bound, upper_bound], [y_bracket-0.02, y_bracket+0.02], 'r-', linewidth=1)
+                ax1.plot([lower_bound, lower_bound], [0, measured_height*1.1], 'k--', linewidth=1)
+                ax1.plot([upper_bound, upper_bound], [0, measured_height*1.1], 'k--', linewidth=1)
                 
                 # Add text with height and SNR values
                 ax1.text(pos + 0.1, measured_height/2, 
@@ -953,43 +282,231 @@ def signal_to_noise_simulator():
         if show_noise_var.get() and noise_regions:
             for noise_start_idx, noise_end_idx in noise_regions:
                 # Highlight noise region
-                noise_x_start = x[noise_start_idx]
-                noise_x_end = x[noise_end_idx]
+                noise_x_start = x_sampled[noise_start_idx]
+                noise_x_end = x_sampled[noise_end_idx]
                 ax1.axvspan(noise_x_start, noise_x_end, alpha=0.2, color='yellow', label='Noise region' if noise_regions.index((noise_start_idx, noise_end_idx)) == 0 else "")
             
             # Use first noise region for measurements
             noise_start_idx, noise_end_idx = noise_regions[0]
-            noise_x_start = x[noise_start_idx]
-            noise_x_end = x[noise_end_idx]
+            noise_x_start = x_sampled[noise_start_idx]
+            noise_x_end = x_sampled[noise_end_idx]
             
             # Add horizontal lines showing the +/- standard deviation of noise
-            mean_noise = np.mean(y_noisy[noise_start_idx:noise_end_idx])
+            mean_noise = np.mean(y_noisy_sampled[noise_start_idx:noise_end_idx])
             ax1.axhline(y=mean_noise + estimated_noise, color='orange', linestyle='--', alpha=0.7)
             ax1.axhline(y=mean_noise - estimated_noise, color='orange', linestyle='--', alpha=0.7)
         
-        # Add summary information
-        #ax1.text(0.02, 0.95, f"Theoretical SNR: {snr:.1f}", transform=ax1.transAxes, fontsize=9)
-        
-        # Add annotation for noise measurement - move to lower left with red text
+        # Add annotation for noise measurement
         ax1.text(0.02, 0.05, 
                  f"Noise SD: {estimated_noise:.3f}", 
                  fontsize=12, color='red', transform=ax1.transAxes, 
                  bbox=dict(facecolor='white', alpha=0.7))
         
-        ax1.set_xlabel('Retention Time (min)')
-        ax1.set_ylabel('Detector Response')
-        ax1.set_title('Impact of Signal-to-Noise Ratio on Peak Detection')
-        ax1.legend(loc='upper right')
+        # Add annotation for sampling rate
+        # Calculate actual points across peak width
+        full_peak_width = 6 * avg_width  # 6 sigma = ~99.7% of peak
+        points_per_unit = len(x_sampled) / 10.0  # 10 is our x-axis range
+        actual_points = int(full_peak_width * points_per_unit)
+        ax1.text(0.02, 0.12, 
+                f"Points across peak: {actual_points}", 
+                fontsize=12, color='blue', transform=ax1.transAxes, 
+                bbox=dict(facecolor='white', alpha=0.7))
+        
+        # Set labels with increased font size
+        ax1.set_xlabel('Retention Time (min)', fontsize=14)
+        ax1.set_ylabel('Detector Response', fontsize=14)
+        
+        # Remove the title
+        # ax1.set_title('Impact of Signal-to-Noise Ratio on Peak Detection', fontsize=14)
+        
+        # Increase tick label font size
+        ax1.tick_params(axis='both', which='major', labelsize=12)
+        
+        ax1.legend(loc='upper right', fontsize=12)
         fig1.tight_layout()
         canvas1.draw()
         
-        # Update the Detection Methods tab if data is available
-        if hasattr(update_methods_viz, '__self__') and update_methods_viz.__self__ is not None:
-            update_methods_viz()
+        # Update the Detection Methods tab
+        update_methods_viz()
     
-    # Update button
-    ttk.Button(controls_frame1, text="Update Visualization", command=update_snr_viz).pack(side=tk.LEFT, padx=20)
+    # Function to update detection methods visualization
+    def update_methods_viz():
+        # Check if we have data from the first tab
+        if shared_data['x'] is None or shared_data['y_noisy'] is None:
+            return
+        
+        # Get shared data from first tab
+        x = shared_data['x']
+        y_noisy = shared_data['y_noisy']
+        peaks = shared_data['peaks']
+        snr = shared_data['snr']
+        
+        # Calculate appropriate window size for Savitzky-Golay filter based on peak width
+        # Use 1/2 the number of points across the narrowest peak
+        if peaks:
+            # Find narrowest peak width
+            min_width = min([width for _, _, width in peaks])
+            # Convert width to number of points (assuming x range and number of points)
+            x_range = x[-1] - x[0]
+            points_per_unit = len(x) / x_range
+            # Calculate points across peak (based on actual sampling)
+            narrowest_peak_points = int(6 * min_width * points_per_unit)
+            # Use half of that, and make sure it's odd
+            sg_window = max(narrowest_peak_points // 2, 5)
+            if sg_window % 2 == 0:
+                sg_window += 1  # Make window odd-sized as required by savgol_filter
+        else:
+            sg_window = min(int(len(x) * 0.05), 51)  # Default fallback
+            
+        # Clear the entire figure and recreate the axes
+        fig2.clear()
+        ax2 = fig2.add_subplot(111)
+        
+        # Only create derivative axis if needed
+        show_derivatives = show_first_deriv_var.get() or show_second_deriv_var.get()
+        if show_derivatives:
+            ax2_deriv = ax2.twinx()
+        
+        # Plot raw signal and smoothed signal on primary axis
+        ax2.plot(x, y_noisy, 'b-', linewidth=1, label='Signal with noise')
+        
+        # Method 2: Savitzky-Golay filter (better smoothing)
+        y_savgol = savgol_filter(y_noisy, window_length=sg_window, polyorder=3)
+        ax2.plot(x, y_savgol, 'g-', linewidth=1.5, label='Savitzky-Golay smooth')
+        
+        # Calculate derivatives if they'll be used
+        if show_derivatives:
+            # Method 3: First derivative for peak detection - on secondary axis
+            y_deriv = savgol_filter(y_noisy, window_length=sg_window, polyorder=3, deriv=1)
+            
+            # Method 4: Second derivative for peak detection - on secondary axis
+            y_deriv2 = savgol_filter(y_noisy, window_length=sg_window, polyorder=3, deriv=2)
+            
+            # Plot derivatives based on checkbox states
+            if show_first_deriv_var.get():
+                ax2_deriv.plot(x, y_deriv, 'm-', linewidth=1, label='First derivative')
+                
+            if show_second_deriv_var.get():
+                ax2_deriv.plot(x, y_deriv2, 'c-', linewidth=1, label='Second derivative')
+        
+        # Add peak positions and boundaries
+        for pos, height, width in peaks:
+            peak_idx = np.abs(x - pos).argmin()
+            measured_height = y_noisy[peak_idx]
+            
+            # Plot peak marker
+            ax2.plot(pos, measured_height, 'ro', markersize=6)
+            
+            # If show peak boundaries is enabled
+            if show_peak_boundaries_var.get():
+                # Draw peak boundaries with vertical dashed black lines
+                lower_bound = pos - 3 * width
+                upper_bound = pos + 3 * width
+                
+                # Replace the axvspan with vertical dashed lines
+                ax2.plot([lower_bound, lower_bound], [0, measured_height*1.1], 'k--', linewidth=1)
+                ax2.plot([upper_bound, upper_bound], [0, measured_height*1.1], 'k--', linewidth=1)
+        
+        # Add info about window size used
+        ax2.text(0.02, 0.05, 
+                f"SG Window: {sg_window} points", 
+                fontsize=10, color='green', transform=ax2.transAxes, 
+                bbox=dict(facecolor='white', alpha=0.7))
+                
+        # Set labels for both axes with increased font size
+        ax2.set_xlabel('Retention Time (min)', fontsize=14)
+        ax2.set_ylabel('Detector Response', color='b', fontsize=14)
+        
+        # Only set up derivative axis if derivatives are shown
+        if show_derivatives:
+            ax2_deriv.set_ylabel('Derivative Values', color='k', fontsize=14)  # Use black for derivatives
+            
+            # Add legends for both y-axes
+            lines1, labels1 = ax2.get_legend_handles_labels()
+            lines2, labels2 = ax2_deriv.get_legend_handles_labels()
+            ax2.legend(lines1 + lines2, labels1 + labels2, loc='upper right', fontsize=12)
+            
+            # Adjust colors of tick labels to match the line colors
+            ax2.tick_params(axis='y', colors='b', labelsize=12)
+            ax2_deriv.tick_params(axis='y', colors='k', labelsize=12)  # Use black for derivative axis ticks
+            ax2.tick_params(axis='x', labelsize=12)
+        else:
+            # Just add legend for the primary axis
+            ax2.legend(loc='upper right', fontsize=12)
+            ax2.tick_params(axis='both', which='major', labelsize=12)
+            
+        # Set title with increased font size
+        ax2.set_title(f'Comparison of Detection Methods at SNR = {snr:.1f}', fontsize=14)
+        
+        fig2.tight_layout()
+        canvas2.draw()
     
+    # Now create the UI elements and reference the functions
+    # SNR control with text entry
+    ttk.Label(controls_frame1, text="SNR Value:").pack(side=tk.LEFT, padx=5)
+    snr_entry = ttk.Entry(controls_frame1, textvariable=snr_var, width=6)
+    snr_entry.pack(side=tk.LEFT, padx=5)
+
+    # Add validation for numeric input - improved version
+    def validate_snr_input(*args):
+        try:
+            value = float(snr_var.get())
+            if value <= 0:
+                snr_var.set("0.1")  # Set a minimum value
+        except ValueError:
+            # Only reset if the value is completely invalid
+            if snr_var.get().strip() and not snr_var.get() == "-":  # Allow typing negative
+                snr_var.set("10.0")  # Reset to default if not a valid number
+    
+    # Use after_idle to delay validation slightly, allowing text replacement to occur first
+    def delayed_validation(*args):
+        sim_window.after_idle(validate_snr_input)
+    
+    snr_var.trace("w", delayed_validation)
+    
+    # Number of peaks control
+    ttk.Label(controls_frame1, text="Number of Peaks:").pack(side=tk.LEFT, padx=15)
+    num_peaks_spinbox = ttk.Spinbox(controls_frame1, from_=1, to=10, textvariable=num_peaks_var, width=5)
+    num_peaks_spinbox.pack(side=tk.LEFT, padx=5)
+    
+    # Points across peak control
+    ttk.Label(controls_frame1, text="Points Across Peak:").pack(side=tk.LEFT, padx=15)
+    points_entry = ttk.Entry(controls_frame1, textvariable=points_across_var, width=4)
+    points_entry.pack(side=tk.LEFT, padx=5)
+    
+    # Validate points across peak input with delayed validation
+    def validate_points_input(*args):
+        try:
+            value = int(points_across_var.get())
+            if value < 3:
+                points_across_var.set("3")  # Set a minimum value for reliable peak detection
+        except ValueError:
+            if points_across_var.get().strip():
+                points_across_var.set("12")  # Default
+    
+    # Use after_idle to delay validation slightly, allowing text replacement to occur first
+    def delayed_points_validation(*args):
+        sim_window.after_idle(validate_points_input)
+    
+    points_across_var.trace("w", delayed_points_validation)
+    
+    # Add display options combo box in the second row
+    ttk.Label(controls_frame1_row2, text="Display Mode:").pack(side=tk.LEFT, padx=5)
+    display_mode_combo = ttk.Combobox(controls_frame1_row2, textvariable=display_mode_var, 
+                                    values=["Normal", "High-Res with Noise"],
+                                    width=15, state="readonly")
+    display_mode_combo.pack(side=tk.LEFT, padx=5)
+    
+    # Visualization options in the second row
+    show_height_check = ttk.Checkbutton(controls_frame1_row2, text="Show Peak Heights", variable=show_height_var)
+    show_height_check.pack(side=tk.LEFT, padx=15)
+    
+    show_noise_check = ttk.Checkbutton(controls_frame1_row2, text="Show Noise Region", variable=show_noise_var)
+    show_noise_check.pack(side=tk.LEFT, padx=15)
+    
+    # Update button for tab1 (in the second row)
+    ttk.Button(controls_frame1_row2, text="Update Visualization", command=update_snr_viz).pack(side=tk.LEFT, padx=20)
+
     # Tab 2: Detection Methods
     tab2 = ttk.Frame(notebook)
     notebook.add(tab2, text="Detection Methods Comparison")
@@ -1005,64 +522,19 @@ def signal_to_noise_simulator():
     controls_frame2.pack(fill=tk.X, pady=5)
     
     # Show peak boundaries checkbox
-    show_peak_boundaries_var = tk.BooleanVar(value=False)
     show_peak_boundaries_check = ttk.Checkbutton(controls_frame2, text="Show Peak Boundaries", variable=show_peak_boundaries_var)
     show_peak_boundaries_check.pack(side=tk.LEFT, padx=15)
+
+    # Create variables for controlling derivatives visibility
+    show_first_deriv_var = tk.BooleanVar(value=True)
+    show_second_deriv_var = tk.BooleanVar(value=True)
     
-    # Function to update detection methods visualization
-    def update_methods_viz():
-        # Check if we have data from the first tab
-        if shared_data['x'] is None or shared_data['y_noisy'] is None:
-            return
-        
-        # Get shared data from first tab
-        x = shared_data['x']
-        y_true = shared_data['y_true']
-        y_noisy = shared_data['y_noisy']
-        peaks = shared_data['peaks']
-        snr = shared_data['snr']
-        
-        # Update plot
-        ax2.clear()
-        ax2.plot(x, y_noisy, 'b-', linewidth=1, label='Noisy signal')
-        
-        # Method 2: Savitzky-Golay filter (better smoothing)
-        y_savgol = savgol_filter(y_noisy, window_length=51, polyorder=3)
-        ax2.plot(x, y_savgol, 'g-', linewidth=1, label='Savitzky-Golay')
-        
-        # Method 3: First derivative for peak detection
-        y_deriv = savgol_filter(y_noisy, window_length=51, polyorder=3, deriv=1)
-        # Scale derivative for visualization
-        deriv_scaling = 0.2
-        ax2.plot(x, deriv_scaling * y_deriv, 'm-', linewidth=1, label='First derivative')
-        
-        # Add peak positions and boundaries
-        for pos, height, width in peaks:
-            peak_idx = np.abs(x - pos).argmin()
-            measured_height = y_noisy[peak_idx]
-            
-            # Plot peak marker
-            ax2.plot(pos, measured_height, 'ro', markersize=6)
-            
-            # If show peak boundaries is enabled
-            if show_peak_boundaries_var.get():
-                # Draw peak boundaries (±3σ from center)
-                lower_bound = pos - 3 * width
-                upper_bound = pos + 3 * width
-                ax2.axvspan(lower_bound, upper_bound, alpha=0.1, color='pink')
-                
-                # Add bracket markers for peak width
-                y_bracket = measured_height * 0.8
-                ax2.plot([lower_bound, upper_bound], [y_bracket, y_bracket], 'r-', linewidth=1)
-                ax2.plot([lower_bound, lower_bound], [y_bracket-0.02, y_bracket+0.02], 'r-', linewidth=1)
-                ax2.plot([upper_bound, upper_bound], [y_bracket-0.02, y_bracket+0.02], 'r-', linewidth=1)
-        
-        ax2.set_xlabel('Retention Time (min)')
-        ax2.set_ylabel('Detector Response')
-        ax2.set_title(f'Comparison of Detection Methods at SNR = {snr:.1f}')
-        ax2.legend()
-        fig2.tight_layout()
-        canvas2.draw()
+    # Add checkboxes for controlling derivatives
+    show_first_deriv_check = ttk.Checkbutton(controls_frame2, text="Show 1st Derivative", variable=show_first_deriv_var)
+    show_first_deriv_check.pack(side=tk.LEFT, padx=15)
+    
+    show_second_deriv_check = ttk.Checkbutton(controls_frame2, text="Show 2nd Derivative", variable=show_second_deriv_var)
+    show_second_deriv_check.pack(side=tk.LEFT, padx=15)
     
     # Update button for tab2
     ttk.Button(controls_frame2, text="Update Methods", command=update_methods_viz).pack(side=tk.LEFT, padx=20)
@@ -1171,50 +643,6 @@ This simulation demonstrates these challenges by allowing you to experience how 
     notebook.bind("<<NotebookTabChanged>>", on_tab_change)
     
     sim_window.mainloop()
-
-def main():
-    root = tk.Tk()
-    
-    # Create main menu
-    main_frame = ttk.Frame(root, padding="20")
-    main_frame.pack(fill=tk.BOTH, expand=True)
-    
-    # Title
-    title_label = ttk.Label(main_frame, text="Chromatography Signal-to-Noise Educational Game", font=("Arial", 16, "bold"))
-    title_label.pack(pady=20)
-    
-    # Description
-    description = (
-        "This educational game helps you understand how signal-to-noise ratio affects peak detection in chromatography. "
-        "Choose a mode to begin:"
-    )
-    desc_label = ttk.Label(main_frame, text=description, wraplength=400, justify=tk.CENTER)
-    desc_label.pack(pady=20)
-    
-    # Buttons frame
-    button_frame = ttk.Frame(main_frame)
-    button_frame.pack(pady=20)
-    
-    # Game mode button
-    game_button = ttk.Button(button_frame, text="Play Game Mode", width=20,
-                          command=lambda: [root.withdraw(), ChromatographyGame(tk.Toplevel())])
-    game_button.pack(pady=10)
-    
-    # Advanced mode button
-    advanced_button = ttk.Button(button_frame, text="Advanced Analysis Mode", width=20,
-                              command=advanced_mode)
-    advanced_button.pack(pady=10)
-    
-    # Exit button
-    exit_button = ttk.Button(button_frame, text="Exit", width=20, command=root.quit)
-    exit_button.pack(pady=10)
-    
-    # Credits
-    credits = "Created for educational purposes in analytical chemistry and instrumental analysis courses"
-    credits_label = ttk.Label(main_frame, text=credits, font=("Arial", 9), foreground="gray")
-    credits_label.pack(pady=10)
-    
-    root.mainloop()
 
 if __name__ == "__main__":
     signal_to_noise_simulator()
