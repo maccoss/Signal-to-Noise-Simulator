@@ -35,7 +35,7 @@ The simulator requires the following Python libraries:
 
 1. Clone the repository or download the source code
 ```bash
-git clone https://github.com/maccoss/Signal-to-Noise.git
+git clone https://github.com/maccoss/Signal-to-Noise-Simulator.git
 cd Signal-to-Noise
 ```
 
@@ -119,8 +119,8 @@ This simulator is ideal for:
 
 ## License
 
-This project is available for educational use.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
-Developed for educational purposes in analytical chemistry and instrumental analysis courses.
+Developed for educational purposes and for evaluation of different peak detection algorithms.
